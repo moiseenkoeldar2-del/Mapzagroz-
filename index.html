@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мониторинг Воздушной Обстановки</title>
+    <!-- Подключение стилей карты Leaflet.js -->
+    <link rel="stylesheet" href="https://unpkg.com" />
+    <style>
+        body, html { 
+            margin: 0; 
+            padding: 0; 
+            height: 100%; 
+            background: #111; 
+            font-family: sans-serif; 
+            overflow: hidden; 
+        }
+        #map { 
+            width: 100%; 
+            height: 100%; 
+        }
+        /* Стили для иконок воздушных целей */
+        .map-icon { 
+            font-size: 26px; 
+            text-align: center; 
+            font-weight: bold; 
+        }
+        .icon-label { 
+            font-size: 11px; 
+            color: #fff; 
+            background: rgba(0, 0, 0, 0.8); 
+            padding: 2px 5px; 
+            border-radius: 4px; 
+            white-space: nowrap; 
+            display: block; 
+            margin-top: 4px; 
+            font-family: monospace; 
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+        }
+        /* Информационная панель */
+        #control-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: rgba(20, 20, 20, 0.9);
+            color: #fff;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-family: monospace;
+            border: 1px solid #333;
+            width: 220px;
+        }
+        .status-online { color: #00ffcc; font-weight: bold; }
+        .status-offline { color: #ff3333; font-weight: bold; }
+        .test-btn {
+            display: block;
+            width: 100%;
+            margin-top: 8px;
+            background: #222;
+            color: #ccc;
+            border: 1px solid #444;
+            padding: 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: monospace;
+            text-align: left;
+        }
+        .test-btn:hover {
+            background: #333;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+
+<div id="control-panel">
+    <div>Связь с ботом: <span id="status-text" class="status-offline">ОТКЛЮЧЕНА</span></div>
+    <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
+    <div style="color:#888; margin-bottom:5px;">Симуляция (для проверки):</div>
+    <button class="test-btn" onclick="triggerTest('missile', 1800, '🚀 Баллистика', 'днепр')">☄️ Тест: Ракета на Днепр</button>
+    <button class="test-btn" onclick="triggerTest('drone', 52, '🛩️ БПЛА Герань', 'днепр')">🛸 Тест: Герань на Днепр</button>
+    <button class="test-btn" onclick="triggerTest('fpv', 35, '🛸 FPV-Дрон', 'таганрог')">🎮 Тест: FPV на Таганрог</button>
+</div>
+
+<div id="map"></div>
+
+<!-- Подключение библиотеки Leaflet.js -->
+<script src="https://unpkg.com"></script>
+<script>
+    // Инициализация карты
+    const map = L.map('map').setView([48.2, 36.5], 6);
+    
+    // Загрузка темной подложки
+    L.tileLayer('https://{s}://{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    // Координаты для ручных тестов (должны совпадать с ботом)
+    const testCoords = {
+        from: {
+            "днепр": {"lat": 45.1000, "lon": 34.1000}, // Крым
+            "таганрог": {"lat": 47.2000, "lon": 38.7500} // Окраина
+        },
+        to: {
+            "днепр": {"lat": 48.4647, "lon": 35.0462},
+            "таганрог": {"lat": 47.2357, "lon": 38.8969}
+        }
+    };
+
+    // Функция ручного запуска анимации для проверки
+    function triggerTest(type, speed, label, target) {
+        let fromNode = target === 'днепр' ? testCoords.from["днепр"] : testCoords.from["таганрог"];
+        let toNode = testCoords.to[target];
+        animateThreat(fromNode, toNode, type, speed, label);
+    }
+
+    // Настройка связи с Python-ботом
+    const statusText = document.getElementById('status-text');
+    let socket;
+
+    function connectWebSocket() {
+        socket = new WebSocket('ws://localhost:8000');
+
+        socket.onopen = function() {
+            statusText.textContent = "ПОДКЛЮЧЕНО";
+            statusText.className = "status-online";
+        };
+
+        socket.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                animateThreat(data.from, data.to, data.type, data.speed, data.label);
+            } catch (e) {
+                console.error("Ошибка чтения данных:", e);
+            }
+        };
+
+        socket.onclose = function() {
+            statusText.textContent = "ОТКЛЮЧЕНА";
+            statusText.className = "status-offline";
+            setTimeout(connectWebSocket, 3000); // Попытка переподключения
+        };
+    }
+
+    connectWebSocket();
+
+    // Функция плавной анимации полета
+    function animateThreat(fromCoord, toCoord, type, speedMps, labelText) {
+        const fromLatLng = L.latLng(fromCoord.lat, fromCoord.lon);
+        const toLatLng = L.latLng(toCoord.lat, toCoord.lon);
+        
+        const distance = fromLatLng.distanceTo(toLatLng);
+        const durationMs = (distance / speedMps) * 1000;
+
+        let iconHtml = '🚀';
+        let lineColor = '#ff3333';
+        let lineDash = 'none';
+
+        if (type === 'drone') { 
+            iconHtml = '🛩️'; 
+            lineColor = '#ffcc00'; 
+            lineDash = '6, 8'; 
+        } else if (type === 'fpv') { 
+            iconHtml = '🛸'; 
+            lineColor = '#00ffff'; 
+            lineDash = '3, 4'; 
+        }
+
+        const pathLine = L.polyline([fromLatLng, toLatLng], {
+            color: lineColor, dashArray: lineDash, weight: 3, opacity: 0.6
+        }).addTo(map);
+
+        const customIcon = L.divIcon({
+            className: 'map-icon',
+            html: `<div>${iconHtml}<span class="icon-label">${labelText}</span></div>`,
+            iconSize:,
+            iconAnchor: [15, 15]
+        });
+        
+        const marker = L.marker(fromLatLng, { icon: customIcon }).addTo(map);
+        const startTime = performance.now();
+
+        function move(now) {
+            let progress = (now - startTime) / durationMs;
+            if (progress > 1) progress = 1;
+
+            let currentLat = fromCoord.lat + (toCoord.lat - fromCoord.lat) * progress;
+            let currentLon = fromCoord.lon + (toCoord.lon - fromCoord.lon) * progress;
+            marker.setLatLng([currentLat, currentLon]);
+
+            if (progress < 1) {
+                requestAnimationFrame(move);
+            } else {
+                map.removeLayer(marker);
+                pathLine.setStyle({ opacity: 0.15 });
+                
+                const alertCircle = L.circleMarker(toLatLng, {
+                    radius: 18, color: lineColor, fillColor: lineColor, fillOpacity: 0.4
+                }).addTo(map);
+                
+                setTimeout(() => map.removeLayer(alertCircle), 4000);
+            }
+        }
+        requestAnimationFrame(move);
+    }
+</script>
+</body>
+</html>
